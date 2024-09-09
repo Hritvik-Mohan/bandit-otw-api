@@ -1,46 +1,54 @@
-const express = require('express');
-const { Server } = require('socket.io');
-const pty = require('node-pty');
-const ssh2 = require('ssh2');
+const express = require("express");
+const cors = require("cors");
+const http = require("http");
+const WebSocket = require("ws");
+const { spawn } = require("node-pty");
 
 const app = express();
-const server = require('http').createServer(app);
-const io = new Server(server);
+app.use(cors({ origin: "*" }));
 
-io.on('connection', (socket) => {
-    let sshConn;
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-    // Create SSH connection
-    socket.on('startSSH', (data) => {
-        sshConn = new ssh2.Client();
-        sshConn.on('ready', () => {
-            sshConn.exec('bash', (err, stream) => {
-                if (err) throw err;
+wss.on("connection", (ws) => {
+  const ptyProcess = spawn("bash", [], {
+    name: "xterm-color",
+    env: process.env,
+  });
 
-                // Send terminal output to the frontend
-                stream.on('data', (data) => {
-                    socket.emit('output', data.toString());
-                });
+  // Send a connected message to the client
+  ws.send(
+    JSON.stringify({
+      event: "connected",
+      message: "Socket connected successfully",
+    })
+  );
 
-                // Recieve terminal input from frontend and pass to SSH session
-                socket.on('input', (inputData) => {
-                    stream.write(inputData);
-                });
-            });
-        }).connect({
-            host: data.host,
-            port: data.port,
-            username: data.username,
-            password: data.password, // Password for the Bandit level
-        })
+  ws.on("message", (message) => {
+    console.log("Received:", message);
 
-        socket.on('disconnect', () => {
-            if (sshConn) sshConn.end();
-        })
+    const data = JSON.parse(message.toString());
+
+    if (data.type === "command") {
+      ptyProcess.write(data.data);
+    }
+  });
+
+  ptyProcess.onData((data) => {
+    const message = JSON.stringify({
+      type: "data",
+      data,
     });
+    ws.send(message);
+  });
 
+  // Handle disconnection
+  ws.on("close", () => {
+    console.log("Client disconnected");
+    ptyProcess.kill();
+  });
+});
 
-})
-
-
-server.listen(3000, () => console.log("Server running at port 3000"))
+server.listen(3000, () => {
+  console.log("Server running at port 3000");
+});
